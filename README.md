@@ -1,181 +1,183 @@
 # VRChat MCP OSC
 
-**VRChat MCP OSC** provides a bridge between AI assistants and VRChat using the Model Context Protocol (MCP), enabling AI-driven avatar control and interactions in virtual reality environments.  
+**VRChat MCP OSC** provides a bridge between AI assistants and VRChat using the Model Context Protocol (MCP), enabling AI-driven avatar control and interaction in virtual reality environments.
 
+This is a fork of [Krekun/vrchat-mcp-osc](https://github.com/Krekun/vrchat-mcp-osc) with added **OSCQuery support** — the server can automatically discover VRChat's live parameter values without relying on VRChat broadcasting OSC output.
 
-## Overview
+---
 
-By leveraging OSC (Open Sound Control) to communicate with VRChat, **VRChat MCP OSC** allows AI assistants such as Claude to:
-- Control avatar parameters and expressions
-- Send messages in VRChat
-- Respond to various VR events  
-And more—all through the high-level API provided by the Model Context Protocol.
+## What This Server Can Do
 
+### Avatar information (via OSCQuery)
 
-## Key Features
+| Tool | What it returns |
+|------|----------------|
+| `get_avatar_name` | Current avatar's ID (e.g. `avtr_xxxx-...`) via OSCQuery; falls back to OSC-broadcast name |
+| `get_avatar_parameters` | **Full parameter tree** with current live values, types, and read/write access — fetched directly from VRChat's OSCQuery HTTP endpoint, no OSC output required |
 
-- **Avatar Control**: Manipulate avatar parameters and expressions
-- **Movement Control**: Direct avatar movement and orientation
-- **Communication**: Send messages through VRChat's chatbox
-- **Menu Access**: Toggle VRChat menu and interface elements
-- **Avatar Information**: Query avatar properties and parameters
-- **Seamless VRChat Integration**: Automatic detection of avatar configurations
-
-## System Requirements
-
-- Node.js 18 or higher
-- VRChat with OSC enabled
-- Claude Desktop (with MCP support)
-
-## Using with Claude Desktop
-
-### Clone and npm link
-
-```bash
-git clone https://github.com/Krekun/vrchat-mcp-osc
-cd vrchat-mcp-osc
-npm link
+`get_avatar_parameters` returns a JSON array of objects like:
+```json
+[
+  { "path": "/avatar/parameters/IsLocal",    "type": "T", "value": true,  "access": 1 },
+  { "path": "/avatar/parameters/GestureLeft","type": "i", "value": 2,     "access": 3 },
+  { "path": "/avatar/parameters/Viseme",     "type": "f", "value": 0.0,   "access": 3 }
+]
 ```
 
-### Configure Claude Desktop
+OSC type strings: `"f"` = float, `"i"` = int, `"T"/"F"` = bool true/false, `"N"` = nil/no value, `"s"` = string.
 
-Configure Claude Desktop by editing the `claude_desktop_config.json` file:
+### Avatar control (via OSC send)
+
+| Tool | What it does |
+|------|-------------|
+| `set_avatar_parameter` | Set a named parameter to a value (float, int, or bool) |
+| `set_emote_parameter` | Trigger a VRCEmote by number |
+| `set_avatar` | Change to a specific avatar by ID |
+| `get_avatar_list` | List available avatars from the relay |
+
+### Movement & input
+
+| Tool | What it does |
+|------|-------------|
+| `move_avatar` | Walk forward / backward / left / right for N seconds |
+| `look_direction` | Turn left or right for N seconds |
+| `jump` | Jump |
+| `menu` | Toggle the VRChat quick menu |
+| `voice` | Toggle mute |
+
+### Communication
+
+| Tool | What it does |
+|------|-------------|
+| `send_message` | Send a message to the VRChat chatbox (instantly or just populate it) |
+
+---
+
+## OSCQuery Auto-Discovery
+
+VRChat 2023.4+ runs an **OSCQuery HTTP server** on a random TCP port and advertises it via mDNS. This fork discovers it automatically:
+
+1. **Fast path (Windows)**: looks up VRChat's PID via `Get-Process VRChat`, then finds its listening TCP ports via `Get-NetTCPConnection` — completes in ~200 ms.
+2. **mDNS fallback**: waits up to 3 s for VRChat to broadcast its `_oscjson._tcp` service announcement.
+
+No port configuration needed. As long as VRChat is running with OSC enabled, parameter values are available immediately.
+
+### OSC vs OSCQuery
+
+| | Plain OSC | OSCQuery (this fork) |
+|--|-----------|---------------------|
+| Get parameter values | Only when VRChat broadcasts them (requires "OSC output" on) | Any time, by fetching VRChat's HTTP endpoint |
+| Parameter types | Inferred from message | Explicitly declared |
+| Discover all parameters | Not possible | Yes — full tree via one HTTP request |
+
+---
+
+## Requirements
+
+- Node.js 18 or higher
+- VRChat with **OSC enabled** (Settings → OSC → Enable)
+- Windows (fast process-based discovery) or any platform (mDNS fallback works on macOS/Linux too)
+
+---
+
+## Setup (from source)
+
+This package is not published to npm. Clone and build:
+
+```bash
+git clone https://github.com/misonyah/vrchat-mcp-osc
+cd vrchat-mcp-osc
+
+# Install dependencies (pnpm required — install with: npm i -g pnpm)
+pnpm install
+
+# Build all packages
+pnpm -r build
+```
+
+### Configure Claude Desktop or Claude Code
+
+#### Claude Desktop (`claude_desktop_config.json`)
 
 ```json
 {
   "mcpServers": {
-    "vrchat-mcp-osc": {
-      "command": "npx",
-      "args": [
-        "vrchat-mcp-osc"
-      ]
+    "vrchat-osc": {
+      "command": "node",
+      "args": ["C:/path/to/vrchat-mcp-osc/packages/mcp-server/dist/server.js"]
     }
   }
 }
 ```
 
-### Command Line Options
+#### Claude Code (`.mcp.json` in project root)
 
-The server supports various command-line arguments for customization:
-
-```bash
-# Claude Desktop configuration
+```json
 {
   "mcpServers": {
-    "vrchat-mcp-osc": {
-      "command": "npx",
-      "args": [
-        "vrchat-mcp-osc",
-        "--websocket-port", "8765",
-        "--websocket-host", "localhost",
-        "--osc-send-port", "9000",
-        "--osc-send-ip", "127.0.0.1",
-        "--osc-receive-port", "9001",
-        "--osc-receive-ip", "127.0.0.1",
-        "--debug"             
-      ]
+    "vrchat-osc": {
+      "command": "node",
+      "args": ["C:/Users/yourname/git/vrchat-mcp-osc/packages/mcp-server/dist/server.js"]
     }
   }
 }
 ```
 
-### Available Options
+### Command-line options
 
-| Option | Description | Default | Notes |
-|--------|-------------|---------|-------|
-| `--websocket-port <port>` | WebSocket port | 8765 | For WebSocket communication |
-| `--websocket-host <host>` | WebSocket host | localhost | For WebSocket communication |
-| `--osc-send-port <port>` | OSC send port | 9000 | Port for sending to VRChat |
-| `--osc-send-ip <ip>` | OSC send IP | 127.0.0.1 | Address for sending to VRChat |
-| `--osc-receive-port <port>` | OSC receive port | 9001 | Port for receiving from VRChat |
-| `--osc-receive-ip <ip>` | OSC receive IP | 127.0.0.1 | Address for receiving from VRChat |
-| `--debug` | Enable debug logging | false | Output detailed logs |
-| `--no-relay` | Disable relay server | false | When not using relay server |
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--osc-send-port <port>` | 9000 | Port VRChat listens on for OSC input |
+| `--osc-send-ip <ip>` | 127.0.0.1 | VRChat OSC address |
+| `--osc-receive-port <port>` | 9001 | Port to receive OSC output from VRChat |
+| `--websocket-port <port>` | 8765 | Internal relay WebSocket port |
+| `--debug` | off | Verbose logging to stderr |
+| `--no-relay` | off | Skip the internal WebSocket relay (OSCQuery still works) |
 
-## Available MCP Tools
-
-VRChat MCP OSC exposes the following MCP tools to AI assistants:
-
-| Tool Name | Description |
-|-----------|-------------|
-| `get_avatar_name` | Retrieves the current avatar's name |
-| `get_avatar_parameters` | Lists available avatar parameters |
-| `set_avatar_parameter` | Sets a specific avatar parameter |
-| `set_emote_parameter` | Triggers avatar emotes |
-| `move_avatar` | Moves the avatar in a specific direction |
-| `look_direction` | Controls avatar's view direction |
-| `jump` | Makes the avatar jump |
-| `menu` | Toggles the VRChat menu |
-| `voice` | Toggles voice features |
-| `send_message` | Sends a message to the VRChat chatbox |
-
+---
 
 ## Troubleshooting
 
-### Common Issues
+**Parameters come back empty**
+- Make sure VRChat OSC is enabled: Settings → OSC → Enable
+- Try restarting VRChat after enabling OSC
 
-1. **VRChat not responding to commands**
-   - Ensure OSC is enabled in VRChat settings
-   - Check that the OSC ports match between VRChat and MCP configuration
-   - Restart VRChat and Claude Desktop
+**`get_avatar_parameters` returns old/cached values after switching avatars**
+- The OSCQuery port is cached per session. Restart Claude / the MCP server if you switch avatars and values look stale.
 
-2. **MCP server not starting**
-   - Ensure Node.js 18+ is installed
-   - Check command line arguments for errors
-   - Try running with `--debug` flag for more detailed logs
-   - Use `npx vrchat-mcp-osc -- --debug` if direct arguments don't work
+**OSCQuery not finding VRChat on a non-Windows machine**
+- The fast path (process lookup) is Windows-only. mDNS fallback runs on all platforms but requires mDNS to be working on the network interface.
 
-3. **NPX execution issues**
-   - If arguments aren't being recognized, try using the double dash format: `npx vrchat-mcp-osc -- --debug`
-   - On Windows, try running in a command prompt with administrator privileges
-   - If you're having trouble with global installation, try the local npm link approach
+**MCP server not starting**
+- Run `node packages/mcp-server/dist/server.js --debug` directly to see startup errors.
+
+---
 
 ## Project Structure
 
 ```
 vrchat-mcp-osc/
 ├── packages/
-│   ├── mcp-server/    # MCP server implementation (main entry point)
-│   ├── relay-server/  # WebSocket to OSC relay
-│   ├── types/         # Shared TypeScript interfaces
-│   └── utils/         # Common utilities
-└── pnpm-workspace.yaml  # Workspace configuration
+│   ├── mcp-server/          # MCP server + OSCQuery client
+│   │   └── src/
+│   │       ├── oscquery-client.ts   # OSCQuery discovery & parameter fetch
+│   │       └── server.ts            # MCP tool definitions
+│   ├── relay-server/        # WebSocket ↔ OSC relay
+│   ├── types/               # Shared TypeScript types
+│   └── utils/               # Logging utilities
+└── pnpm-workspace.yaml
 ```
 
-## Development
-
-### Build From Source
-
-```bash
-# Clone the repository
-git clone https://github.com/Krekun/vrchat-mcp-osc
-cd vrchat-mcp-osc
-
-# Install dependencies
-pnpm install
-
-# Build all packages
-pnpm -r build
-
-# Development mode
-pnpm -r dev
-```
+---
 
 ## License
-VRChat MCP OSC is dual-licensed as follows:
 
-For Non-Commercial Use:
-You may use, modify, and redistribute the software under the terms of the MIT License.
-(See the MIT License file for details.)
-
-For Commercial Use:
-Commercial use of this software requires a separate commercial license.
-
-
-By using this software under the MIT License for non-commercial purposes, you agree to the terms of that license. Commercial users must obtain a commercial license as described above.
+Dual-licensed (same as upstream):
+- **Non-commercial use**: MIT License
+- **Commercial use**: requires a separate commercial license
 
 ## Acknowledgments
 
-- VRChat team for the OSC integration
-- Model Context Protocol for the standardized AI interface
-- Anthropic for Claude's MCP implementation
+- [Krekun](https://github.com/Krekun) for the original vrchat-mcp-osc
+- VRChat team for OSC and OSCQuery integration
+- Anthropic for the Model Context Protocol
