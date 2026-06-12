@@ -8,6 +8,7 @@
  */
 
 import { createLogger } from '@vrchat-mcp-osc/utils';
+import { execSync } from 'child_process';
 import * as http from 'http';
 import { OSCQueryDiscovery } from 'oscquery';
 
@@ -161,9 +162,46 @@ function walkNode(node: OscQueryNode, results: OscQueryParameter[]): void {
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
-/** Resolve OSCQuery port via mDNS (cached after first discovery). */
+/**
+ * Fast path: find VRChat's listening TCP ports via the OS (no broadcast wait).
+ * Works on Windows via PowerShell; returns null on other platforms or if VRChat isn't running.
+ */
+async function findPortViaProcess(): Promise<number | null> {
+  try {
+    const pidOut = execSync(
+      'powershell -Command "(Get-Process VRChat -ErrorAction SilentlyContinue).Id"',
+      { encoding: 'utf8', timeout: 3000 }
+    ).trim();
+    if (!pidOut) return null;
+
+    const pid = parseInt(pidOut);
+    if (isNaN(pid)) return null;
+
+    const portsOut = execSync(
+      `powershell -Command "(Get-NetTCPConnection -State Listen -OwningProcess ${pid} -ErrorAction SilentlyContinue).LocalPort"`,
+      { encoding: 'utf8', timeout: 3000 }
+    ).trim();
+
+    const ports = portsOut.split(/\s+/).map(p => parseInt(p)).filter(p => !isNaN(p) && p > 1024);
+
+    for (const port of ports) {
+      if (await isVRChatService('127.0.0.1', port)) {
+        logger.info(`Found VRChat OSCQuery via process lookup at port ${port}`);
+        return port;
+      }
+    }
+  } catch {
+    // PowerShell not available or VRChat not running
+  }
+  return null;
+}
+
+/** Resolve OSCQuery port: fast process lookup, then mDNS fallback. */
 async function resolvePort(): Promise<number | null> {
-  return await waitForDiscovery();
+  if (_discoveredPort !== null) return _discoveredPort;
+  const port = await findPortViaProcess() ?? await waitForDiscovery(3000);
+  if (port) _discoveredPort = port;
+  return port;
 }
 
 /**
