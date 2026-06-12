@@ -25,10 +25,12 @@
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.7.0",
+    "@vrchat-mcp-osc/relay-server": "workspace:*",
     "@vrchat-mcp-osc/types": "workspace:*",
     "@vrchat-mcp-osc/utils": "workspace:*",
-    "@vrchat-mcp-osc/relay-server": "workspace:*",
+    "bonjour-service": "^1.4.1",
     "node-osc": "^8.0.12",
+    "oscquery": "^1.1.1",
     "uuid": "^9.0.1",
     "ws": "^8.15.1",
     "zod": "^3.22.4"

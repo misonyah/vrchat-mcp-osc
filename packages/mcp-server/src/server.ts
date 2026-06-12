@@ -21,6 +21,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { z } from 'zod';
 import { RelayServerManager, RelayServerManagerEvent } from './managers/relay-server-manager.js';
+import { getAvatarId, getAvatarParameters, startDiscovery, stopDiscovery } from './oscquery-client.js';
 import { AvatarTools, InputTools } from './tools/index.js';
 import { LookDirection, MovementDirection, ServerContext, ToolContext } from './types/index.js';
 import { WebSocketClient } from './ws-client.js';
@@ -255,7 +256,10 @@ async function initializeServer(): Promise<void> {
     await server.connect(transport);
     
     logger.info('VRChat OSC MCP server initialized successfully');
-    
+
+    // Start OSCQuery mDNS discovery for proactive parameter reading
+    startDiscovery();
+
     // Register cleanup handler for process exit
     process.on('SIGINT', cleanup);
     process.on('SIGTERM', cleanup);
@@ -277,6 +281,8 @@ async function cleanup(): Promise<void> {
       await relayServerManager.stop();
     }
     
+    stopDiscovery();
+
     // Disconnect from WebSocket server
     await wsClient.disconnect();
     
@@ -369,13 +375,18 @@ server.tool(
   {},
   async () => {
     try {
+      // Try OSCQuery first (gives avatar ID; fall back to OSC-based name)
+      const avatarId = await getAvatarId();
+      if (avatarId) {
+        return { content: [{ type: 'text', text: avatarId }] };
+      }
       const name = await avatarTools.getAvatarName();
       return { content: [{ type: 'text', text: name }] };
     } catch (error) {
-      return { 
-        content: [{ 
-          type: 'text', 
-          text: `Error getting avatar name: ${error instanceof Error ? error.message : String(error)}` 
+      return {
+        content: [{
+          type: 'text',
+          text: `Error getting avatar name: ${error instanceof Error ? error.message : String(error)}`
         }],
         isError: true
       };
@@ -426,18 +437,24 @@ server.tool(
 
 server.tool(
   'get_avatar_parameters',
-  'Get a list of parameters available on the current avatar.',
+  'Get a list of parameters available on the current avatar, with their current values and types (via OSCQuery).',
   {},
   async (_, extra) => {
     try {
+      // Try OSCQuery first — returns names + types + live values without needing OSC output enabled
+      const oscqParams = await getAvatarParameters();
+      if (oscqParams.length > 0) {
+        return { content: [{ type: 'text', text: JSON.stringify(oscqParams, null, 2) }] };
+      }
+      // Fallback to plain OSC parameter list
       const ctx = createToolContext(extra);
       const parameters = await avatarTools.getParameterNames(ctx);
       return { content: [{ type: 'text', text: JSON.stringify(parameters) }] };
     } catch (error) {
-      return { 
-        content: [{ 
-          type: 'text', 
-          text: `Error getting parameters: ${error instanceof Error ? error.message : String(error)}` 
+      return {
+        content: [{
+          type: 'text',
+          text: `Error getting parameters: ${error instanceof Error ? error.message : String(error)}`
         }],
         isError: true
       };
