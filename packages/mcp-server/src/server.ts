@@ -257,9 +257,6 @@ async function initializeServer(): Promise<void> {
     
     logger.info('VRChat OSC MCP server initialized successfully');
 
-    // Start OSCQuery mDNS discovery for proactive parameter reading
-    startDiscovery();
-
     // Register cleanup handler for process exit
     process.on('SIGINT', cleanup);
     process.on('SIGTERM', cleanup);
@@ -636,6 +633,10 @@ server.tool(
     }
   }
 );
+
+// Start OSCQuery mDNS discovery immediately so it has time to find VRChat
+// before the first tool call arrives.
+startDiscovery();
 
 // Silent initialization without using process.exit
 initializeServer().catch(error => {

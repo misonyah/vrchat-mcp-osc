@@ -33,21 +33,33 @@ interface OscQueryNode {
 let _discoveredPort: number | null = null;
 let _browser: InstanceType<typeof OSCQueryDiscovery> | null = null;
 
+/** Returns true if the OSCQuery service at address:port is VRChat (has /avatar/parameters). */
+async function isVRChatService(address: string, port: number): Promise<boolean> {
+  try {
+    const raw = await httpGet(`http://${address}:${port}/avatar/parameters`, 1000);
+    const node = JSON.parse(raw) as OscQueryNode;
+    return node.FULL_PATH === '/avatar/parameters';
+  } catch {
+    return false;
+  }
+}
+
 /** Start mDNS browsing for VRChat's _oscjson._tcp service. */
 export function startDiscovery(): void {
   if (_browser) return;
 
   _browser = new OSCQueryDiscovery();
 
-  _browser.on('up', (service: { host: string; port: number; name: string }) => {
-    if (service.name.startsWith('VRChat-Client-')) {
-      logger.info(`Discovered VRChat OSCQuery on ${service.host}:${service.port}`);
+  _browser.on('up', async (service: { address: string; port: number }) => {
+    if (_discoveredPort !== null) return; // already found
+    if (await isVRChatService(service.address, service.port)) {
+      logger.info(`Discovered VRChat OSCQuery at ${service.address}:${service.port}`);
       _discoveredPort = service.port;
     }
   });
 
-  _browser.on('down', (service: { name: string }) => {
-    if (service.name.startsWith('VRChat-Client-')) {
+  _browser.on('down', async (service: { address: string; port: number }) => {
+    if (_discoveredPort === service.port) {
       logger.info('VRChat OSCQuery service went down');
       _discoveredPort = null;
     }
@@ -83,25 +95,50 @@ async function fetchOscQueryRoot(port: number): Promise<OscQueryNode> {
   return JSON.parse(raw) as OscQueryNode;
 }
 
-// ── Port scanning fallback ───────────────────────────────────────────────────
+// ── mDNS wait ────────────────────────────────────────────────────────────────
 
-async function scanForOscQueryPort(): Promise<number | null> {
-  // VRChat picks a random port but it's usually in this range.
-  for (let port = 9000; port <= 9100; port++) {
-    try {
-      const raw = await httpGet(`http://127.0.0.1:${port}/`, 300);
-      const parsed = JSON.parse(raw) as OscQueryNode;
-      // VRChat's root node always has /avatar/parameters
-      if (parsed.CONTENTS?.['avatar']?.CONTENTS?.['parameters']) {
-        logger.info(`Found VRChat OSCQuery via port scan at port ${port}`);
-        _discoveredPort = port;
-        return port;
+/**
+ * Wait up to `timeoutMs` for mDNS to announce a VRChat OSCQuery service.
+ * Returns the port or null if VRChat doesn't appear in time.
+ */
+async function waitForDiscovery(timeoutMs = 4000): Promise<number | null> {
+  // Already know the port — resolve immediately.
+  if (_discoveredPort !== null) return _discoveredPort;
+
+  // Check services already found by the browser before we started listening.
+  if (_browser) {
+    for (const svc of _browser.getServices()) {
+      if (await isVRChatService(svc.address, svc.port)) {
+        _discoveredPort = svc.port;
+        return svc.port;
       }
-    } catch {
-      // not this port
     }
   }
-  return null;
+
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      _browser?.off('up', handler);
+      logger.warn('VRChat OSCQuery not found via mDNS within timeout');
+      resolve(null);
+    }, timeoutMs);
+
+    const handler = (service: { host: string; port: number; name: string }) => {
+      if (service.name.startsWith('VRChat-Client-')) {
+        clearTimeout(timer);
+        _browser?.off('up', handler);
+        _discoveredPort = service.port;
+        resolve(service.port);
+      }
+    };
+
+    if (!_browser) {
+      clearTimeout(timer);
+      resolve(null);
+      return;
+    }
+
+    _browser.on('up', handler);
+  });
 }
 
 // ── Parameter tree walker ────────────────────────────────────────────────────
@@ -124,10 +161,9 @@ function walkNode(node: OscQueryNode, results: OscQueryParameter[]): void {
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
-/** Resolve OSCQuery port: use mDNS cache, then scan. */
+/** Resolve OSCQuery port via mDNS (cached after first discovery). */
 async function resolvePort(): Promise<number | null> {
-  if (_discoveredPort !== null) return _discoveredPort;
-  return await scanForOscQueryPort();
+  return await waitForDiscovery();
 }
 
 /**
